@@ -3,6 +3,22 @@
 use std::fs::File;
 use std::io::Result;
 
+pub mod math {
+    pub trait DivCeiling {
+        type Value;
+
+        fn div_ceiling(self, divisor: Self::Value) -> Self::Value;
+    }
+
+    impl DivCeiling for u32 {
+        type Value = Self;
+
+        fn div_ceiling(self, divisor: Self::Value) -> Self::Value {
+            (self + (divisor - 1)) / divisor
+        }
+    }
+}
+
 pub mod block_device {
     pub trait BlockDevice {
         fn block_size(&self) -> u16;
@@ -54,15 +70,16 @@ pub mod fat {
     use prim::*;
 
     pub mod prim {
+        use super::super::math::DivCeiling;
         use std::convert::TryInto;
 
         type Range = std::ops::Range<usize>;
 
         pub const BIOS_PARAMETER_BLOCK_SIZE: usize = 512;
 
-        pub struct CommonBiosParameterBlock;
+        pub struct CommonBiosParameterBlock<'a>(&'a [u8]);
 
-        impl CommonBiosParameterBlock {
+        impl<'a> CommonBiosParameterBlock<'a> {
             pub const SIZE: usize = 36;
 
             const RANGE_JUMP: Range = 0..3;
@@ -82,30 +99,71 @@ pub mod fat {
             const RANGE_HIDDEN_SECTORS: Range = 28..32;
             const RANGE_TOTAL_SECTORS_32: Range = 32..36;
 
-            pub fn read_oem(data: &[u8]) -> &[u8] {
-                &data[Self::RANGE_OEM]
+            pub fn oem(&self) -> &[u8] {
+                self.range(Self::RANGE_OEM)
             }
 
-            pub fn read_sectors_per_fat_16(data: &[u8]) -> u16 {
-                let bytes = &data[Self::RANGE_SECTORS_PER_FAT_16];
-                u16::from_le_bytes(bytes.try_into().unwrap())
+            pub fn bytes_per_sector(&self) -> u16 {
+                self.u16(Self::RANGE_BYTES_PER_SECTOR)
             }
 
-            pub fn read_total_sectors(data: &[u8]) -> u32 {
-                match Self::read_total_sectors_16(data) {
-                    0 => Self::read_total_sectors_32(data),
+            pub fn sectors_per_cluster(&self) -> u8 {
+                self.u8(Self::RANGE_SECTORS_PER_CLUSTER)
+            }
+
+            pub fn reserved_sector_count(&self) -> u16 {
+                self.u16(Self::RANGE_RESERVED_SECTOR_COUNT)
+            }
+
+            pub fn fat_count(&self) -> u8 {
+                self.u8(Self::RANGE_NUM_FATS)
+            }
+
+            pub fn root_entry_count(&self) -> u16 {
+                self.u16(Self::RANGE_ROOT_ENTRY_COUNT)
+            }
+
+            pub fn sectors_per_fat_16(&self) -> u16 {
+                self.u16(Self::RANGE_SECTORS_PER_FAT_16)
+            }
+
+            pub fn total_sectors_16(&self) -> u16 {
+                self.u16(Self::RANGE_TOTAL_SECTORS_16)
+            }
+
+            pub fn total_sectors_32(&self) -> u32 {
+                self.u32(Self::RANGE_TOTAL_SECTORS_32)
+            }
+
+            pub fn total_sectors(&self) -> u32 {
+                match self.total_sectors_16() {
+                    0 => self.total_sectors_32(),
                     n => n as u32,
                 }
             }
 
-            pub fn read_total_sectors_16(data: &[u8]) -> u16 {
-                let bytes = &data[Self::RANGE_TOTAL_SECTORS_16];
+            fn range(&self, range: Range) -> &[u8] {
+                &self.0[range]
+            }
+
+            fn u8(&self, range: Range) -> u8 {
+                self.0[range][0]
+            }
+
+            fn u16(&self, range: Range) -> u16 {
+                let bytes = self.range(range);
                 u16::from_le_bytes(bytes.try_into().unwrap())
             }
 
-            pub fn read_total_sectors_32(data: &[u8]) -> u32 {
-                let bytes = &data[Self::RANGE_TOTAL_SECTORS_32];
+            fn u32(&self, range: Range) -> u32 {
+                let bytes = self.range(range);
                 u32::from_le_bytes(bytes.try_into().unwrap())
+            }
+        }
+
+        impl<'a> From<&'a [u8]> for CommonBiosParameterBlock<'a> {
+            fn from(other: &'a [u8]) -> Self {
+                Self(other)
             }
         }
 
@@ -122,9 +180,9 @@ pub mod fat {
             const RANGE_SIG_WORD: Range = 510..512;
         }
 
-        pub struct ExtendedFat32BiosParameterBlock;
+        pub struct ExtendedFat32BiosParameterBlock<'a>(&'a [u8]);
 
-        impl ExtendedFat32BiosParameterBlock {
+        impl<'a> ExtendedFat32BiosParameterBlock<'a> {
             const RANGE_SECTORS_PER_FAT_32: Range = 36..40;
             const RANGE_EXT_FLAGS: Range = 40..42;
             const RANGE_FS_VER: Range = 42..44;
@@ -141,48 +199,63 @@ pub mod fat {
             const RANGE_BOOT: Range = 90..510;
             const RANGE_SIG_WORD: Range = 510..512;
 
-            pub fn read_sectors_per_fat_32(data: &[u8]) -> u32 {
-                let bytes = &data[Self::RANGE_SECTORS_PER_FAT_32];
+            pub fn sectors_per_fat_32(&self) -> u32 {
+                self.u32(Self::RANGE_SECTORS_PER_FAT_32)
+            }
+
+            fn range(&self, range: Range) -> &[u8] {
+                &self.0[range]
+            }
+
+            fn u16(&self, range: Range) -> u16 {
+                let bytes = self.range(range);
+                u16::from_le_bytes(bytes.try_into().unwrap())
+            }
+
+            fn u32(&self, range: Range) -> u32 {
+                let bytes = self.range(range);
                 u32::from_le_bytes(bytes.try_into().unwrap())
+            }
+        }
+
+        impl<'a> From<&'a [u8]> for ExtendedFat32BiosParameterBlock<'a> {
+            fn from(other: &'a [u8]) -> Self {
+                Self(other)
             }
         }
 
         pub const FAT_DIR_ENTRY_SIZE: usize = 32;
 
-        pub fn root_dir_count_of_sectors(root_entry_count: u16, bytes_per_sector: u16) -> u32 {
-            let root_entry_count = root_entry_count as u32;
-            let bytes_per_sector = bytes_per_sector as u32;
-            let root_entry_bytes = root_entry_count * (FAT_DIR_ENTRY_SIZE as u32);
-
-            (root_entry_bytes + (bytes_per_sector - 1)) / bytes_per_sector
+        pub fn root_dir_sector_count(root_entry_count: u16, bytes_per_sector: u16) -> u32 {
+            let root_entry_bytes = (root_entry_count as u32) * (FAT_DIR_ENTRY_SIZE as u32);
+            root_entry_bytes.div_ceiling(bytes_per_sector as u32)
         }
 
         pub fn sectors_per_fat(data: &[u8]) -> u32 {
-            match CommonBiosParameterBlock::read_sectors_per_fat_16(data) {
-                0 => ExtendedFat32BiosParameterBlock::read_sectors_per_fat_32(data),
+            match CommonBiosParameterBlock::from(data).sectors_per_fat_16() {
+                0 => ExtendedFat32BiosParameterBlock::from(data).sectors_per_fat_32(),
                 n => n as u32,
             }
         }
 
-        pub fn data_region_count_of_sectors(
-            fat_size: u32,
+        pub fn data_region_sector_count(
             total_sectors: u32,
             reserved_sector_count: u16,
-            num_fats: u16,
+            sectors_per_fat: u32,
+            fat_count: u8,
             root_dir_sectors: u32,
         ) -> u32 {
             let reserved_sector_count = reserved_sector_count as u32;
+            let fat_count = fat_count as u32;
 
-            let num_fats = num_fats as u32;
+            let meta_sectors =
+                reserved_sector_count + (sectors_per_fat * fat_count) + root_dir_sectors;
 
-            total_sectors - (reserved_sector_count + (num_fats * fat_size) + root_dir_sectors)
-        }
-
-        pub fn count_of_clusters(data_sectors: u32, sectors_per_cluster: u32) -> u32 {
-            data_sectors / sectors_per_cluster
+            total_sectors - meta_sectors
         }
     }
 
+    #[derive(Debug)]
     pub enum Type {
         Fat12,
         Fat16,
@@ -214,9 +287,32 @@ pub mod fat {
             let mut read_buffer = vec![0u8; device.block_size() as usize];
             device.read_block(0, read_buffer.as_mut_slice());
 
+            // Right, what version of FAT are we dealing with?
+            let bpb: CommonBiosParameterBlock = read_buffer.as_slice().into();
+
+            let root_dir_sector_count =
+                root_dir_sector_count(bpb.root_entry_count(), bpb.bytes_per_sector());
+
+            let sectors_per_fat = sectors_per_fat(read_buffer.as_slice());
+
+            let sectors_per_cluster = bpb.sectors_per_cluster() as u32;
+
+            let data_sectors = data_region_sector_count(
+                bpb.total_sectors(),
+                bpb.reserved_sector_count(),
+                sectors_per_fat,
+                bpb.fat_count(),
+                root_dir_sector_count,
+            );
+
+            let count_of_clusters = data_sectors / sectors_per_cluster;
+
+            let fat_type = determine_type(count_of_clusters);
+
             println!(
-                "OEM: {}",
-                str::from_utf8(CommonBiosParameterBlock::read_oem(read_buffer.as_slice())).unwrap()
+                "Type: {:?}, OEM: {}",
+                fat_type,
+                str::from_utf8(bpb.oem()).unwrap()
             );
 
             Self {
