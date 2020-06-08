@@ -42,8 +42,8 @@ pub mod block_device {
                 }
 
                 let offset = self.offset + (block * block_size);
-                self.file.seek(SeekFrom::Start(offset));
-                self.file.read_exact(dest);
+                self.file.seek(SeekFrom::Start(offset)).unwrap();
+                self.file.read_exact(dest).unwrap();
             }
         }
     }
