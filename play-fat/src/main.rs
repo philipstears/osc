@@ -25,7 +25,7 @@ pub mod math {
 pub mod block_device {
     pub trait BlockDevice {
         fn block_size(&self) -> u16;
-        fn read_block(&mut self, block: u64, destination: &mut [u8]);
+        fn read_blocks(&mut self, start_block: u64, destination: &mut [u8]);
     }
 
     pub mod virt {
@@ -49,7 +49,7 @@ pub mod block_device {
                 512
             }
 
-            fn read_block(&mut self, block: u64, dest: &mut [u8]) {
+            fn read_blocks(&mut self, start_block: u64, dest: &mut [u8]) {
                 let block_size = self.block_size() as u64;
 
                 if dest.is_empty() {
@@ -60,7 +60,7 @@ pub mod block_device {
                     panic!("The destination must be a multiple of the block size");
                 }
 
-                let offset = self.offset + (block * block_size);
+                let offset = self.offset + (start_block * block_size);
                 self.file.seek(SeekFrom::Start(offset)).unwrap();
                 self.file.read_exact(dest).unwrap();
             }
@@ -317,8 +317,48 @@ pub mod fat {
                 self.u32(Self::RANGE_SIZE)
             }
 
+            pub fn is_read_only(&self) -> bool {
+                self.u8(Self::RANGE_ATTR) & 0x01 != 0
+            }
+
+            pub fn is_hidden(&self) -> bool {
+                self.u8(Self::RANGE_ATTR) & 0x02 != 0
+            }
+
+            pub fn is_system(&self) -> bool {
+                self.u8(Self::RANGE_ATTR) & 0x04 != 0
+            }
+
+            pub fn is_volume_id(&self) -> bool {
+                self.u8(Self::RANGE_ATTR) & 0x08 != 0
+            }
+
+            pub fn is_directory(&self) -> bool {
+                self.u8(Self::RANGE_ATTR) & 0x10 != 0
+            }
+
+            pub fn is_archive(&self) -> bool {
+                self.u8(Self::RANGE_ATTR) & 0x20 != 0
+            }
+
+            pub fn first_cluster_high(&self) -> u16 {
+                self.u16(Self::RANGE_FIRST_CLUSTER_HIGH)
+            }
+
+            pub fn first_cluster_low(&self) -> u16 {
+                self.u16(Self::RANGE_FIRST_CLUSTER_LOW)
+            }
+
+            pub fn first_cluster(&self) -> u32 {
+                ((self.first_cluster_high() as u32) << 16) | (self.first_cluster_low() as u32)
+            }
+
             fn range(&self, range: Range) -> &[u8] {
                 &self.0[range]
+            }
+
+            fn u8(&self, range: Range) -> u8 {
+                self.0[range][0]
             }
 
             fn u16(&self, range: Range) -> u16 {
@@ -525,7 +565,7 @@ pub mod fat {
 
             // Read the BPB
             let mut read_buffer = [0u8; 512];
-            device.read_block(0, &mut read_buffer);
+            device.read_blocks(0, &mut read_buffer);
 
             let read_buffer_slice = &read_buffer[..];
 
@@ -589,9 +629,23 @@ pub mod fat {
             &mut self,
             cluster_buffer: &'a mut [u8],
         ) -> DirectoryEntriesIterator<'a> {
-            // Get the root cluster
             self.device
-                .read_block(self.root_cluster_start_sector as u64, cluster_buffer);
+                .read_blocks(self.root_cluster_start_sector as u64, cluster_buffer);
+            let cluster_buffer: &[u8] = cluster_buffer;
+            DirectoryEntriesCluster::from(cluster_buffer).occupied_entries()
+        }
+
+        pub fn ls<'a>(
+            &mut self,
+            de: StandardDirectoryEntry<'a>,
+            cluster_buffer: &'a mut [u8],
+        ) -> DirectoryEntriesIterator<'a> {
+            let first_sector = first_sector_of_cluster(
+                de.first_cluster(),
+                self.sectors_per_cluster,
+                self.first_data_sector,
+            ) as u64;
+            self.device.read_blocks(first_sector, cluster_buffer);
             let cluster_buffer: &[u8] = cluster_buffer;
             DirectoryEntriesCluster::from(cluster_buffer).occupied_entries()
         }
@@ -600,7 +654,6 @@ pub mod fat {
 
 fn main() -> Result<()> {
     use block_device::virt::*;
-    use fat::prim::*;
     use fat::*;
 
     let image = "/home/stears/data/simon/nox-rust/target/x86-nox/release/nox-rust.img";
@@ -614,25 +667,55 @@ fn main() -> Result<()> {
     let mut cluster_buffer = vec![0u8; fs.cluster_bytes() as usize];
 
     for entry in fs.ls_root(cluster_buffer.as_mut_slice()) {
-        match entry {
-            DirectoryEntry::LongFileName(entry) => {
-                println!(
-                    "Got long file name entry {:?}",
-                    std::char::decode_utf16(entry.chars())
-                        .filter_map(|ch| ch.ok())
-                        .collect::<String>()
-                );
+        process_entry(&mut fs, 0, entry)
+    }
+
+    Ok(())
+}
+
+fn process_entry<'a>(
+    fs: &mut fat::FATFileSystem,
+    level: usize,
+    entry: fat::prim::DirectoryEntry<'a>,
+) {
+    use fat::prim::*;
+
+    match entry {
+        DirectoryEntry::LongFileName(entry) => {
+            for _ in 0..level {
+                print!("  ");
             }
 
-            DirectoryEntry::Standard(entry) => {
+            println!(
+                "LFN: {:?}",
+                std::char::decode_utf16(entry.chars())
+                    .filter_map(|ch| ch.ok())
+                    .collect::<String>()
+            );
+        }
+
+        DirectoryEntry::Standard(entry) => {
+            for _ in 0..level {
+                print!("  ");
+            }
+
+            if entry.is_directory() {
+                println!("Dir: {}", std::str::from_utf8(entry.name()).unwrap(),);
+
+                let mut dir_cluster = vec![0u8; fs.cluster_bytes() as usize];
+
+                if entry.name()[0] != b'.' {
+                    for child_entry in fs.ls(entry, dir_cluster.as_mut_slice()) {
+                        process_entry(fs, level + 1, child_entry)
+                    }
+                }
+            } else {
                 println!(
-                    "Got regular file name entry {} with size {}",
+                    "File: {} ({} bytes)",
                     std::str::from_utf8(entry.name()).unwrap(),
                     entry.size(),
                 );
             }
         }
     }
-
-    Ok(())
 }
