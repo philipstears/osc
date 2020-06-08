@@ -35,6 +35,7 @@ in
       # Required by the fuse crate
       pkg-config
       fuse
+      mtools
     ];
 
     RUST_SRC_PATH = "${rust}/lib/rustlib/src/rust/src";
