@@ -3,6 +3,8 @@
 use std::fs::File;
 use std::io::Result;
 
+// TODO: use https://docs.rs/num-integer? it is probably slower though because
+// it is more general
 pub mod math {
     pub trait DivCeiling {
         type Value;
@@ -13,6 +15,7 @@ pub mod math {
     impl DivCeiling for u32 {
         type Value = Self;
 
+        #[inline]
         fn div_ceiling(self, divisor: Self::Value) -> Self::Value {
             (self + (divisor - 1)) / divisor
         }
@@ -186,7 +189,7 @@ pub mod fat {
             const RANGE_SECTORS_PER_FAT_32: Range = 36..40;
             const RANGE_EXT_FLAGS: Range = 40..42;
             const RANGE_FS_VER: Range = 42..44;
-            const RANGE_ROOT_CLUSTERS: Range = 44..48;
+            const RANGE_ROOT_CLUSTER: Range = 44..48;
             const RANGE_FS_INFO_SECTOR: Range = 48..50;
             const RANGE_BACKUP_BOOT_SECTOR: Range = 50..52;
             const RANGE_RESERVED: Range = 52..64;
@@ -201,6 +204,10 @@ pub mod fat {
 
             pub fn sectors_per_fat_32(&self) -> u32 {
                 self.u32(Self::RANGE_SECTORS_PER_FAT_32)
+            }
+
+            pub fn root_cluster(&self) -> u32 {
+                self.u32(Self::RANGE_ROOT_CLUSTER)
             }
 
             fn range(&self, range: Range) -> &[u8] {
@@ -224,10 +231,228 @@ pub mod fat {
             }
         }
 
-        pub const FAT_DIR_ENTRY_SIZE: usize = 32;
+        pub struct DirectoryEntriesCluster<'a>(&'a [u8]);
+
+        impl<'a> DirectoryEntriesCluster<'a> {
+            pub fn occupied_entries(&self) -> DirectoryEntriesIterator<'a> {
+                DirectoryEntriesIterator(self.0.chunks_exact(DirectoryEntry::SIZE))
+            }
+        }
+
+        impl<'a> From<&'a [u8]> for DirectoryEntriesCluster<'a> {
+            fn from(other: &'a [u8]) -> Self {
+                Self(other)
+            }
+        }
+
+        pub struct DirectoryEntriesIterator<'a>(std::slice::ChunksExact<'a, u8>);
+
+        impl<'a> Iterator for DirectoryEntriesIterator<'a> {
+            type Item = DirectoryEntry<'a>;
+
+            fn next(&mut self) -> Option<Self::Item> {
+                loop {
+                    let entry = self.0.next()?;
+
+                    match entry[0] {
+                        0x00 => {
+                            return None;
+                        }
+                        0xE5 => {
+                            continue;
+                        }
+                        _ => {
+                            return Some(entry.into());
+                        }
+                    }
+                }
+            }
+        }
+
+        pub enum DirectoryEntry<'a> {
+            Standard(StandardDirectoryEntry<'a>),
+            LongFileName(LongFileNameEntry<'a>),
+        }
+
+        impl<'a> DirectoryEntry<'a> {
+            pub const SIZE: usize = 32;
+        }
+
+        impl<'a> From<&'a [u8]> for DirectoryEntry<'a> {
+            fn from(other: &'a [u8]) -> Self {
+                if other[11] == 0x0F {
+                    Self::LongFileName(LongFileNameEntry(other))
+                } else {
+                    Self::Standard(StandardDirectoryEntry(other))
+                }
+            }
+        }
+
+        pub struct StandardDirectoryEntry<'a>(&'a [u8]);
+
+        impl<'a> StandardDirectoryEntry<'a> {
+            const RANGE_NAME: Range = 0..8;
+            const RANGE_EXT: Range = 8..11;
+            const RANGE_ATTR: Range = 11..12;
+            const RANGE_RESERVED_WINNT: Range = 12..13;
+            const RANGE_CREATION_TIME_DECISECS: Range = 13..14;
+            const RANGE_CREATION_TIME: Range = 14..16;
+            const RANGE_CREATION_DATE: Range = 16..18;
+            const RANGE_ACCESS_DATE: Range = 18..20;
+            const RANGE_FIRST_CLUSTER_HIGH: Range = 20..22;
+            const RANGE_MOD_TIME: Range = 22..24;
+            const RANGE_MOD_DATE: Range = 24..26;
+            const RANGE_FIRST_CLUSTER_LOW: Range = 26..28;
+            const RANGE_SIZE: Range = 28..32;
+
+            pub fn name(&self) -> &[u8] {
+                self.range(Self::RANGE_NAME)
+            }
+
+            pub fn ext(&self) -> &[u8] {
+                self.range(Self::RANGE_EXT)
+            }
+
+            pub fn size(&self) -> u32 {
+                self.u32(Self::RANGE_SIZE)
+            }
+
+            fn range(&self, range: Range) -> &[u8] {
+                &self.0[range]
+            }
+
+            fn u16(&self, range: Range) -> u16 {
+                let bytes = self.range(range);
+                u16::from_le_bytes(bytes.try_into().unwrap())
+            }
+
+            fn u32(&self, range: Range) -> u32 {
+                let bytes = self.range(range);
+                u32::from_le_bytes(bytes.try_into().unwrap())
+            }
+        }
+
+        pub struct LongFileNameEntry<'a>(&'a [u8]);
+
+        impl<'a> LongFileNameEntry<'a> {
+            const RANGE_ORDER: Range = 0..1;
+            const RANGE_PORTION1: Range = 1..11;
+            const RANGE_ATTR: Range = 11..12;
+            const RANGE_LONG_ENTRY_TYPE: Range = 12..13;
+            const RANGE_CHECKSUM: Range = 13..14;
+            const RANGE_PORTION2: Range = 14..26;
+            const RANGE_ZERO: Range = 26..28;
+            const RANGE_PORTION3: Range = 28..32;
+
+            pub fn chars(&self) -> LongFileNameCharIterator {
+                LongFileNameCharIterator::new(self)
+            }
+
+            fn portion1(&self) -> &[u8] {
+                self.range(Self::RANGE_PORTION1)
+            }
+
+            fn portion2(&self) -> &[u8] {
+                self.range(Self::RANGE_PORTION2)
+            }
+
+            fn portion3(&self) -> &[u8] {
+                self.range(Self::RANGE_PORTION3)
+            }
+
+            fn range(&self, range: Range) -> &[u8] {
+                &self.0[range]
+            }
+        }
+
+        pub struct LongFileNameCharIterator<'a> {
+            entry: &'a LongFileNameEntry<'a>,
+            state: LongFileNameCharIteratorState<'a>,
+        }
+
+        impl<'a> LongFileNameCharIterator<'a> {
+            fn new(entry: &'a LongFileNameEntry) -> Self {
+                LongFileNameCharIterator {
+                    entry,
+                    state: LongFileNameCharIteratorState::Portion1(U16Iterator(
+                        entry.portion1().iter(),
+                    )),
+                }
+            }
+        }
+
+        impl<'a> Iterator for LongFileNameCharIterator<'a> {
+            type Item = u16;
+
+            fn next(&mut self) -> Option<Self::Item> {
+                use LongFileNameCharIteratorState::*;
+
+                loop {
+                    match self.state {
+                        Portion1(ref mut inner) => match inner.next() {
+                            Some(0) => {
+                                return None;
+                            }
+                            Some(v) => {
+                                return Some(v);
+                            }
+                            None => {
+                                self.state = Portion2(U16Iterator(self.entry.portion2().iter()));
+                            }
+                        },
+                        Portion2(ref mut inner) => match inner.next() {
+                            Some(0) => {
+                                return None;
+                            }
+                            Some(v) => {
+                                return Some(v);
+                            }
+                            None => {
+                                self.state = Portion3(U16Iterator(self.entry.portion3().iter()));
+                            }
+                        },
+                        Portion3(ref mut inner) => match inner.next() {
+                            Some(0) => {
+                                return None;
+                            }
+                            Some(v) => {
+                                return Some(v);
+                            }
+                            None => {
+                                return None;
+                            }
+                        },
+                    }
+                }
+            }
+        }
+
+        enum LongFileNameCharIteratorState<'a> {
+            Portion1(U16Iterator<'a>),
+            Portion2(U16Iterator<'a>),
+            Portion3(U16Iterator<'a>),
+        }
+
+        struct U16Iterator<'a>(std::slice::Iter<'a, u8>);
+
+        impl<'a> Iterator for U16Iterator<'a> {
+            type Item = u16;
+
+            fn next(&mut self) -> Option<Self::Item> {
+                match self.0.next() {
+                    None => None,
+                    Some(first_byte) => match self.0.next() {
+                        None => panic!("Incomplete number of bytes"),
+                        Some(second_byte) => {
+                            Some((*second_byte as u16) << 8 | (*first_byte as u16))
+                        }
+                    },
+                }
+            }
+        }
 
         pub fn root_dir_sector_count(root_entry_count: u16, bytes_per_sector: u16) -> u32 {
-            let root_entry_bytes = (root_entry_count as u32) * (FAT_DIR_ENTRY_SIZE as u32);
+            let root_entry_bytes = (root_entry_count as u32) * (DirectoryEntry::SIZE as u32);
             root_entry_bytes.div_ceiling(bytes_per_sector as u32)
         }
 
@@ -238,8 +463,7 @@ pub mod fat {
             }
         }
 
-        pub fn data_region_sector_count(
-            total_sectors: u32,
+        pub fn meta_sector_count(
             reserved_sector_count: u16,
             sectors_per_fat: u32,
             fat_count: u8,
@@ -247,36 +471,52 @@ pub mod fat {
         ) -> u32 {
             let reserved_sector_count = reserved_sector_count as u32;
             let fat_count = fat_count as u32;
+            reserved_sector_count + (sectors_per_fat * fat_count) + root_dir_sectors
+        }
 
-            let meta_sectors =
-                reserved_sector_count + (sectors_per_fat * fat_count) + root_dir_sectors;
+        pub fn data_region_sector_count(total_sectors: u32, meta_sector_count: u32) -> u32 {
+            total_sectors - meta_sector_count
+        }
 
-            total_sectors - meta_sectors
+        pub fn first_sector_of_cluster(
+            cluster: u32,
+            sectors_per_cluster: u32,
+            first_data_sector: u32,
+        ) -> u32 {
+            ((cluster - 2) * sectors_per_cluster) + first_data_sector
         }
     }
 
-    #[derive(Debug)]
-    pub enum Type {
+    #[derive(Debug, Copy, Clone)]
+    pub enum Variant {
         Fat12,
         Fat16,
         Fat32,
     }
 
-    pub fn determine_type(count_of_clusters: u32) -> Type {
-        use Type::*;
-
-        if count_of_clusters < 4085 {
-            Fat12
-        } else if count_of_clusters < 65525 {
-            Fat16
-        } else {
-            Fat32
+    impl Variant {
+        pub fn from_cluster_count(cluster_count: u32) -> Self {
+            if cluster_count < 4085 {
+                Self::Fat12
+            } else if cluster_count < 65525 {
+                Self::Fat16
+            } else {
+                Self::Fat32
+            }
         }
     }
 
     pub struct FATFileSystem {
         device: Box<dyn BlockDevice>,
         read_buffer: Vec<u8>,
+
+        variant: Variant,
+        sectors_per_cluster: u32,
+        first_fat_sector: u32,
+        first_data_sector: u32,
+        //
+        // TODO: Fat32 only
+        root_cluster_start_sector: u32,
     }
 
     impl FATFileSystem {
@@ -294,30 +534,79 @@ pub mod fat {
                 root_dir_sector_count(bpb.root_entry_count(), bpb.bytes_per_sector());
 
             let sectors_per_fat = sectors_per_fat(read_buffer.as_slice());
+            let sectors_per_cluster = bpb.sectors_per_cluster().into();
+            let reserved_sectors = bpb.reserved_sector_count();
 
-            let sectors_per_cluster = bpb.sectors_per_cluster() as u32;
-
-            let data_sectors = data_region_sector_count(
-                bpb.total_sectors(),
-                bpb.reserved_sector_count(),
+            let meta_sectors = meta_sector_count(
+                reserved_sectors,
                 sectors_per_fat,
                 bpb.fat_count(),
                 root_dir_sector_count,
             );
 
+            let first_data_sector = meta_sectors;
+
+            let data_sectors = bpb.total_sectors() - meta_sectors;
+
             let count_of_clusters = data_sectors / sectors_per_cluster;
 
-            let fat_type = determine_type(count_of_clusters);
+            let variant = Variant::from_cluster_count(count_of_clusters);
+
+            let root_cluster_start_sector = match variant {
+                Variant::Fat12 | Variant::Fat16 => unimplemented!(),
+                Variant::Fat32 => first_sector_of_cluster(
+                    ExtendedFat32BiosParameterBlock::from(read_buffer.as_slice()).root_cluster(),
+                    sectors_per_cluster,
+                    first_data_sector,
+                ),
+            };
 
             println!(
-                "Type: {:?}, OEM: {}",
-                fat_type,
+                "Variant: {:?}, OEM: {}",
+                variant,
                 str::from_utf8(bpb.oem()).unwrap()
             );
 
             Self {
                 device,
                 read_buffer,
+
+                variant,
+                sectors_per_cluster,
+                first_fat_sector: reserved_sectors.into(),
+                first_data_sector,
+                root_cluster_start_sector,
+            }
+        }
+
+        pub fn ls_root(&mut self) {
+            // Get the first sector of the root cluster
+            self.device.read_block(
+                self.root_cluster_start_sector as u64,
+                self.read_buffer.as_mut_slice(),
+            );
+
+            for entry in
+                DirectoryEntriesCluster::from(self.read_buffer.as_slice()).occupied_entries()
+            {
+                match entry {
+                    DirectoryEntry::LongFileName(entry) => {
+                        println!(
+                            "Got long file name entry {:?}",
+                            std::char::decode_utf16(entry.chars())
+                                .filter_map(|ch| ch.ok())
+                                .collect::<String>()
+                        );
+                    }
+
+                    DirectoryEntry::Standard(entry) => {
+                        println!(
+                            "Got regular file name entry {} with size {}",
+                            std::str::from_utf8(entry.name()).unwrap(),
+                            entry.size(),
+                        );
+                    }
+                }
             }
         }
     }
@@ -333,7 +622,8 @@ fn main() -> Result<()> {
     let file = File::open(image)?;
     let device = Box::new(FileBlockDevice::new(file, offset));
 
-    let _fs = FATFileSystem::open(device);
+    let mut fs = FATFileSystem::open(device);
+    fs.ls_root();
 
     Ok(())
 }
