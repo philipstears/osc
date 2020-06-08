@@ -451,9 +451,9 @@ pub mod fat {
             }
         }
 
-        pub fn root_dir_sector_count(root_entry_count: u16, bytes_per_sector: u16) -> u32 {
-            let root_entry_bytes = (root_entry_count as u32) * (DirectoryEntry::SIZE as u32);
-            root_entry_bytes.div_ceiling(bytes_per_sector as u32)
+        pub fn root_dir_sector_count(root_entry_count: u32, bytes_per_sector: u32) -> u32 {
+            let root_entry_bytes = root_entry_count * (DirectoryEntry::SIZE as u32);
+            root_entry_bytes.div_ceiling(bytes_per_sector)
         }
 
         pub fn sectors_per_fat(data: &[u8]) -> u32 {
@@ -508,9 +508,9 @@ pub mod fat {
 
     pub struct FATFileSystem {
         device: Box<dyn BlockDevice>,
-        read_buffer: Vec<u8>,
 
         variant: Variant,
+        bytes_per_sector: u32,
         sectors_per_cluster: u32,
         first_fat_sector: u32,
         first_data_sector: u32,
@@ -524,16 +524,19 @@ pub mod fat {
             use std::str;
 
             // Read the BPB
-            let mut read_buffer = vec![0u8; device.block_size() as usize];
-            device.read_block(0, read_buffer.as_mut_slice());
+            let mut read_buffer = [0u8; 512];
+            device.read_block(0, &mut read_buffer);
+
+            let read_buffer_slice = &read_buffer[..];
 
             // Right, what version of FAT are we dealing with?
-            let bpb: CommonBiosParameterBlock = read_buffer.as_slice().into();
+            let bpb: CommonBiosParameterBlock = read_buffer_slice.into();
 
+            let bytes_per_sector = bpb.bytes_per_sector() as u32;
             let root_dir_sector_count =
-                root_dir_sector_count(bpb.root_entry_count(), bpb.bytes_per_sector());
+                root_dir_sector_count(bpb.root_entry_count() as u32, bytes_per_sector);
 
-            let sectors_per_fat = sectors_per_fat(read_buffer.as_slice());
+            let sectors_per_fat = sectors_per_fat(read_buffer_slice);
             let sectors_per_cluster = bpb.sectors_per_cluster().into();
             let reserved_sectors = bpb.reserved_sector_count();
 
@@ -555,7 +558,7 @@ pub mod fat {
             let root_cluster_start_sector = match variant {
                 Variant::Fat12 | Variant::Fat16 => unimplemented!(),
                 Variant::Fat32 => first_sector_of_cluster(
-                    ExtendedFat32BiosParameterBlock::from(read_buffer.as_slice()).root_cluster(),
+                    ExtendedFat32BiosParameterBlock::from(read_buffer_slice).root_cluster(),
                     sectors_per_cluster,
                     first_data_sector,
                 ),
@@ -569,51 +572,35 @@ pub mod fat {
 
             Self {
                 device,
-                read_buffer,
-
                 variant,
                 sectors_per_cluster,
+                bytes_per_sector,
                 first_fat_sector: reserved_sectors.into(),
                 first_data_sector,
                 root_cluster_start_sector,
             }
         }
 
-        pub fn ls_root(&mut self) {
-            // Get the first sector of the root cluster
-            self.device.read_block(
-                self.root_cluster_start_sector as u64,
-                self.read_buffer.as_mut_slice(),
-            );
+        pub fn cluster_bytes(&mut self) -> u32 {
+            self.bytes_per_sector * self.sectors_per_cluster
+        }
 
-            for entry in
-                DirectoryEntriesCluster::from(self.read_buffer.as_slice()).occupied_entries()
-            {
-                match entry {
-                    DirectoryEntry::LongFileName(entry) => {
-                        println!(
-                            "Got long file name entry {:?}",
-                            std::char::decode_utf16(entry.chars())
-                                .filter_map(|ch| ch.ok())
-                                .collect::<String>()
-                        );
-                    }
-
-                    DirectoryEntry::Standard(entry) => {
-                        println!(
-                            "Got regular file name entry {} with size {}",
-                            std::str::from_utf8(entry.name()).unwrap(),
-                            entry.size(),
-                        );
-                    }
-                }
-            }
+        pub fn ls_root<'a>(
+            &mut self,
+            cluster_buffer: &'a mut [u8],
+        ) -> DirectoryEntriesIterator<'a> {
+            // Get the root cluster
+            self.device
+                .read_block(self.root_cluster_start_sector as u64, cluster_buffer);
+            let cluster_buffer: &[u8] = cluster_buffer;
+            DirectoryEntriesCluster::from(cluster_buffer).occupied_entries()
         }
     }
 }
 
 fn main() -> Result<()> {
     use block_device::virt::*;
+    use fat::prim::*;
     use fat::*;
 
     let image = "/home/stears/data/simon/nox-rust/target/x86-nox/release/nox-rust.img";
@@ -623,7 +610,29 @@ fn main() -> Result<()> {
     let device = Box::new(FileBlockDevice::new(file, offset));
 
     let mut fs = FATFileSystem::open(device);
-    fs.ls_root();
+
+    let mut cluster_buffer = vec![0u8; fs.cluster_bytes() as usize];
+
+    for entry in fs.ls_root(cluster_buffer.as_mut_slice()) {
+        match entry {
+            DirectoryEntry::LongFileName(entry) => {
+                println!(
+                    "Got long file name entry {:?}",
+                    std::char::decode_utf16(entry.chars())
+                        .filter_map(|ch| ch.ok())
+                        .collect::<String>()
+                );
+            }
+
+            DirectoryEntry::Standard(entry) => {
+                println!(
+                    "Got regular file name entry {} with size {}",
+                    std::str::from_utf8(entry.name()).unwrap(),
+                    entry.size(),
+                );
+            }
+        }
+    }
 
     Ok(())
 }
