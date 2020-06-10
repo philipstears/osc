@@ -618,7 +618,7 @@ pub mod fat {
             }
         }
 
-        pub fn cluster_bytes(&mut self) -> u32 {
+        pub fn cluster_bytes(&self) -> u32 {
             self.bytes_per_sector * self.sectors_per_cluster
         }
 
