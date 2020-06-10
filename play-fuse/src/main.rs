@@ -18,6 +18,7 @@ const TTL: Duration = Duration::from_secs(1);
 
 struct NodeDetails {
     attr: FileAttr,
+    cluster: u32,
 }
 
 struct FSImpl {
@@ -60,49 +61,26 @@ impl FSImpl {
 
         reply.attr(&TTL, &root_attr);
     }
+}
 
-    fn read_root_dir(&mut self, _req: &Request, offset: i64, mut reply: ReplyDirectory) {
-        let mut index = MIN_INODE;
+impl Filesystem for FSImpl {
+    fn lookup(&mut self, req: &Request, parent: u64, name: &OsStr, reply: ReplyEntry) {
+        println!("Looking up {:?} in {}", name, parent);
 
-        if offset > 0 {
-            return;
-        }
+        let directory_entries = if parent == FUSE_ROOT_ID {
+            self.fs.ls_root(self.buffer.as_mut_slice())
+        } else {
+            let index = (parent - MIN_INODE) as usize;
 
-        println!("Starting root dir enumeration with offset {}", offset);
-
-        // TODO: what about "." and ".."
-        for entry in self.fs.ls_root(self.buffer.as_mut_slice()) {
-            match entry {
-                DirectoryEntry::LongFileName(_entry) => {}
-
-                DirectoryEntry::Standard(entry) => {
-                    let entry_name = std::str::from_utf8(entry.name()).unwrap().trim();
-
-                    // TODO: proper inode alloc
-                    let inode = index;
-                    let next_offset = index as i64 + 1;
-
-                    if entry.is_directory() {
-                        println!(
-                            "Returning directory entry {:?} with inode {}",
-                            entry_name, inode
-                        );
-                        reply.add(inode, next_offset, FileType::Directory, entry_name);
-                    } else {
-                        println!("Returning file entry {:?} with inode {}", entry_name, inode);
-                        reply.add(inode, next_offset, FileType::RegularFile, entry_name);
-                    }
-
-                    index += 1;
-                }
+            if let Some(details) = self.nodes.get(index) {
+                self.fs.ls(details.cluster, self.buffer.as_mut_slice())
+            } else {
+                reply.error(ENOENT);
+                return;
             }
-        }
+        };
 
-        reply.ok();
-    }
-
-    fn root_lookup(&mut self, req: &Request, name: &OsStr, reply: ReplyEntry) {
-        for (i, entry) in self.fs.ls_root(self.buffer.as_mut_slice()).enumerate() {
+        for entry in directory_entries {
             match entry {
                 DirectoryEntry::LongFileName(_entry) => {}
 
@@ -136,7 +114,10 @@ impl FSImpl {
                         flags: 0,
                     };
 
-                    let node_details = NodeDetails { attr };
+                    let node_details = NodeDetails {
+                        attr,
+                        cluster: entry.first_cluster(),
+                    };
 
                     reply.entry(&TTL, &node_details.attr, 0);
 
@@ -151,17 +132,6 @@ impl FSImpl {
 
         println!("Could not find entry {:?}", name);
         reply.error(ENOENT);
-    }
-}
-
-impl Filesystem for FSImpl {
-    fn lookup(&mut self, req: &Request, parent: u64, name: &OsStr, reply: ReplyEntry) {
-        if parent == FUSE_ROOT_ID {
-            self.root_lookup(req, name, reply);
-        } else {
-            println!("Request to lookup '{:?}' with parent {}", name, parent);
-            reply.error(ENOENT);
-        }
     }
 
     fn forget(&mut self, _req: &Request, ino: u64, nlookup: u64) {
@@ -206,13 +176,56 @@ impl Filesystem for FSImpl {
         reply.error(ENOENT);
     }
 
-    fn readdir(&mut self, req: &Request, ino: u64, _fh: u64, offset: i64, reply: ReplyDirectory) {
-        if ino == FUSE_ROOT_ID {
-            self.read_root_dir(req, offset, reply);
+    fn readdir(
+        &mut self,
+        _req: &Request,
+        ino: u64,
+        _fh: u64,
+        offset: i64,
+        mut reply: ReplyDirectory,
+    ) {
+        println!("Starting enumeration of {} with offset {}", ino, offset);
+
+        let directory_entries = if ino == FUSE_ROOT_ID {
+            self.fs.ls_root(self.buffer.as_mut_slice())
         } else {
-            println!("Request to readdir with ino {}", ino);
-            reply.error(ENOENT);
+            let index = (ino - MIN_INODE) as usize;
+
+            if let Some(details) = self.nodes.get(index) {
+                self.fs.ls(details.cluster, self.buffer.as_mut_slice())
+            } else {
+                reply.error(ENOENT);
+                return;
+            }
+        };
+
+        // TODO: what about "." and ".."
+        for (i, entry) in directory_entries.enumerate().skip(offset as usize) {
+            match entry {
+                DirectoryEntry::LongFileName(_entry) => {}
+
+                DirectoryEntry::Standard(entry) => {
+                    let entry_name = std::str::from_utf8(entry.name()).unwrap().trim();
+
+                    // TODO: should we return proper inodes here? I don't think it matters...
+                    let inode = i as u64;
+                    let next_offset = i as i64 + 1;
+
+                    if entry.is_directory() {
+                        println!(
+                            "Returning directory entry {:?} with inode {}",
+                            entry_name, inode
+                        );
+                        reply.add(inode, next_offset, FileType::Directory, entry_name);
+                    } else {
+                        println!("Returning file entry {:?} with inode {}", entry_name, inode);
+                        reply.add(inode, next_offset, FileType::RegularFile, entry_name);
+                    }
+                }
+            }
         }
+
+        reply.ok();
     }
 }
 

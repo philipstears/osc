@@ -634,11 +634,11 @@ pub mod fat {
 
         pub fn ls<'a>(
             &mut self,
-            de: StandardDirectoryEntry<'a>,
+            directory_first_cluster: u32,
             cluster_buffer: &'a mut [u8],
         ) -> DirectoryEntriesIterator<'a> {
             let first_sector = first_sector_of_cluster(
-                de.first_cluster(),
+                directory_first_cluster,
                 self.sectors_per_cluster,
                 self.first_data_sector,
             ) as u64;

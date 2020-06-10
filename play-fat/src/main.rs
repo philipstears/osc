@@ -50,7 +50,7 @@ fn process_entry<'a>(fs: &mut FATFileSystem, level: usize, entry: DirectoryEntry
                 let mut dir_cluster = vec![0u8; fs.cluster_bytes() as usize];
 
                 if entry.name()[0] != b'.' {
-                    for child_entry in fs.ls(entry, dir_cluster.as_mut_slice()) {
+                    for child_entry in fs.ls(entry.first_cluster(), dir_cluster.as_mut_slice()) {
                         process_entry(fs, level + 1, child_entry)
                     }
                 }
