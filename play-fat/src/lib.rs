@@ -646,5 +646,14 @@ pub mod fat {
             let cluster_buffer: &[u8] = cluster_buffer;
             DirectoryEntriesCluster::from(cluster_buffer).occupied_entries()
         }
+
+        pub fn read<'a>(&mut self, file_first_cluster: u32, cluster_buffer: &'a mut [u8]) {
+            let first_sector = first_sector_of_cluster(
+                file_first_cluster,
+                self.sectors_per_cluster,
+                self.first_data_sector,
+            ) as u64;
+            self.device.read_blocks(first_sector, cluster_buffer);
+        }
     }
 }

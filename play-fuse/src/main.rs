@@ -6,39 +6,40 @@ use libc::ENOENT;
 use play_fat::block_device::virt::*;
 use play_fat::fat::prim::*;
 use play_fat::fat::*;
-use slab::Slab;
+use std::collections::{btree_map, BTreeMap};
 use std::env;
 use std::ffi::OsStr;
 use std::fs::File;
 use std::time::{Duration, UNIX_EPOCH};
 
-const MIN_INODE: u64 = FUSE_ROOT_ID + 1;
-
 const TTL: Duration = Duration::from_secs(1);
 
 struct NodeDetails {
+    reference_count: u64,
     attr: FileAttr,
-    cluster: u32,
+    first_cluster: u32,
 }
 
 struct FSImpl {
     fs: FATFileSystem,
     buffer: Vec<u8>,
-    nodes: Slab<NodeDetails>,
+    nodes_by_cluster: BTreeMap<u32, NodeDetails>,
 }
 
 impl FSImpl {
-    const INITIAL_NODE_CAPACITY: usize = 1024;
-
     fn open(image_path: impl AsRef<std::path::Path>, offset: u64) -> Self {
         let image = File::open(image_path).unwrap();
         let device = FileBlockDevice::new(image, offset);
         let fs = FATFileSystem::open(Box::new(device));
 
         let buffer = vec![0u8; fs.cluster_bytes() as usize];
-        let nodes = Slab::with_capacity(Self::INITIAL_NODE_CAPACITY);
+        let nodes_by_cluster = BTreeMap::new();
 
-        Self { fs, buffer, nodes }
+        Self {
+            fs,
+            buffer,
+            nodes_by_cluster,
+        }
     }
 
     fn get_root_attr(&mut self, req: &Request, reply: ReplyAttr) {
@@ -61,19 +62,31 @@ impl FSImpl {
 
         reply.attr(&TTL, &root_attr);
     }
+
+    // TODO: need to figure out the root cluster details for
+    // all variants before committing to this
+    fn cluster_index_to_inode(cluster_index: u32) -> u64 {
+        (cluster_index + 16).into()
+    }
+
+    fn inode_to_cluster_index(inode: u64) -> u32 {
+        (inode - 16) as u32
+    }
 }
 
 impl Filesystem for FSImpl {
-    fn lookup(&mut self, req: &Request, parent: u64, name: &OsStr, reply: ReplyEntry) {
-        println!("Looking up {:?} in {}", name, parent);
+    fn lookup(&mut self, req: &Request, parent_inode: u64, name: &OsStr, reply: ReplyEntry) {
+        println!("Looking up {:?} in {}", name, parent_inode);
 
-        let directory_entries = if parent == FUSE_ROOT_ID {
+        let directory_entries = if parent_inode == FUSE_ROOT_ID {
             self.fs.ls_root(self.buffer.as_mut_slice())
         } else {
-            let index = (parent - MIN_INODE) as usize;
+            let parent_cluster = Self::inode_to_cluster_index(parent_inode);
 
-            if let Some(details) = self.nodes.get(index) {
-                self.fs.ls(details.cluster, self.buffer.as_mut_slice())
+            if let Some(details) = self.nodes_by_cluster.get(&parent_cluster) {
+                assert!(parent_cluster == details.first_cluster);
+                self.fs
+                    .ls(details.first_cluster, self.buffer.as_mut_slice())
             } else {
                 reply.error(ENOENT);
                 return;
@@ -91,39 +104,48 @@ impl Filesystem for FSImpl {
                         continue;
                     }
 
-                    let slot = self.nodes.vacant_entry();
+                    let node_details = self
+                        .nodes_by_cluster
+                        .entry(entry.first_cluster())
+                        .or_insert_with(|| {
+                            let attr = FileAttr {
+                                ino: Self::cluster_index_to_inode(entry.first_cluster()),
+                                size: entry.size() as u64,
+                                blocks: 0,
+                                atime: UNIX_EPOCH,
+                                mtime: UNIX_EPOCH,
+                                ctime: UNIX_EPOCH,
+                                crtime: UNIX_EPOCH,
+                                kind: if entry.is_directory() {
+                                    FileType::Directory
+                                } else {
+                                    FileType::RegularFile
+                                },
+                                perm: 0o755,
+                                nlink: 2,
+                                uid: req.uid(),
+                                gid: req.gid(),
+                                rdev: 0,
+                                flags: 0,
+                            };
 
-                    let attr = FileAttr {
-                        ino: MIN_INODE + slot.key() as u64,
-                        size: 0,
-                        blocks: 0,
-                        atime: UNIX_EPOCH,
-                        mtime: UNIX_EPOCH,
-                        ctime: UNIX_EPOCH,
-                        crtime: UNIX_EPOCH,
-                        kind: if entry.is_directory() {
-                            FileType::Directory
-                        } else {
-                            FileType::RegularFile
-                        },
-                        perm: 0o755,
-                        nlink: 2,
-                        uid: req.uid(),
-                        gid: req.gid(),
-                        rdev: 0,
-                        flags: 0,
-                    };
+                            let node_details = NodeDetails {
+                                reference_count: 0,
+                                attr,
+                                first_cluster: entry.first_cluster(),
+                            };
 
-                    let node_details = NodeDetails {
-                        attr,
-                        cluster: entry.first_cluster(),
-                    };
+                            node_details
+                        });
+
+                    node_details.reference_count += 1;
 
                     reply.entry(&TTL, &node_details.attr, 0);
 
-                    slot.insert(node_details);
-
-                    println!("Found entry {:?} with inode {}", name, attr.ino);
+                    println!(
+                        "Found entry {:?} with inode {}",
+                        name, node_details.attr.ino
+                    );
 
                     return;
                 }
@@ -135,9 +157,36 @@ impl Filesystem for FSImpl {
     }
 
     fn forget(&mut self, _req: &Request, ino: u64, nlookup: u64) {
-        println!("Request to forget {} for count {}", ino, nlookup);
-        let index = (ino - MIN_INODE) as usize;
-        self.nodes.remove(index);
+        match self
+            .nodes_by_cluster
+            .entry(Self::inode_to_cluster_index(ino))
+        {
+            btree_map::Entry::Vacant(_) => {
+                println!(
+                    "Request to forget {} for count {}, but the entry isn't present.",
+                    ino, nlookup
+                );
+            }
+            btree_map::Entry::Occupied(mut entry) => {
+                if entry.get().reference_count > nlookup {
+                    println!(
+                        "Request to forget {} which has count {} for count {}.",
+                        ino,
+                        entry.get().reference_count,
+                        nlookup
+                    );
+                    entry.get_mut().reference_count -= nlookup;
+                } else {
+                    println!(
+                        "Request to forget {} which has count {} for count {}. Removing entry.",
+                        ino,
+                        entry.get().reference_count,
+                        nlookup
+                    );
+                    entry.remove();
+                }
+            }
+        };
     }
 
     fn getattr(&mut self, req: &Request, ino: u64, reply: ReplyAttr) {
@@ -146,9 +195,9 @@ impl Filesystem for FSImpl {
             return;
         }
 
-        let index = (ino - MIN_INODE) as usize;
+        let cluster_index = Self::inode_to_cluster_index(ino);
 
-        if let Some(details) = self.nodes.get(index) {
+        if let Some(details) = self.nodes_by_cluster.get(&cluster_index) {
             println!("Request to get attributes for {} succeeded", ino);
             reply.attr(&TTL, &details.attr);
             return;
@@ -164,15 +213,22 @@ impl Filesystem for FSImpl {
         ino: u64,
         _fh: u64,
         offset: i64,
-        _size: u32,
+        size: u32,
         reply: ReplyData,
     ) {
-        println!("Request to read inode {} with offset {}", ino, offset);
-        //if ino == 2 {
-        //    reply.data(&HELLO_TXT_CONTENT.as_bytes()[offset as usize..]);
-        //} else {
-        //    reply.error(ENOENT);
-        //}
+        let cluster_index = Self::inode_to_cluster_index(ino);
+
+        println!(
+            "Request to read {} from offset {} with size {}",
+            ino, offset, size
+        );
+        if let Some(details) = self.nodes_by_cluster.get(&cluster_index) {
+            self.fs
+                .read(details.first_cluster, self.buffer.as_mut_slice());
+            reply.data(&self.buffer[offset as usize..]);
+            return;
+        }
+
         reply.error(ENOENT);
     }
 
@@ -189,10 +245,11 @@ impl Filesystem for FSImpl {
         let directory_entries = if ino == FUSE_ROOT_ID {
             self.fs.ls_root(self.buffer.as_mut_slice())
         } else {
-            let index = (ino - MIN_INODE) as usize;
+            let index = Self::inode_to_cluster_index(ino);
 
-            if let Some(details) = self.nodes.get(index) {
-                self.fs.ls(details.cluster, self.buffer.as_mut_slice())
+            if let Some(details) = self.nodes_by_cluster.get(&index) {
+                self.fs
+                    .ls(details.first_cluster, self.buffer.as_mut_slice())
             } else {
                 reply.error(ENOENT);
                 return;
@@ -207,8 +264,7 @@ impl Filesystem for FSImpl {
                 DirectoryEntry::Standard(entry) => {
                     let entry_name = std::str::from_utf8(entry.name()).unwrap().trim();
 
-                    // TODO: should we return proper inodes here? I don't think it matters...
-                    let inode = i as u64;
+                    let inode = Self::cluster_index_to_inode(entry.first_cluster());
                     let next_offset = i as i64 + 1;
 
                     if entry.is_directory() {
