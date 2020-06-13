@@ -1,7 +1,6 @@
 #![allow(dead_code)]
 
 use play_fat::block_device::virt::*;
-use play_fat::fat::prim::*;
 use play_fat::fat::*;
 use std::fs::File;
 use std::io::Result;
@@ -13,18 +12,19 @@ fn main() -> Result<()> {
     let file = File::open(image)?;
     let device = Box::new(FileBlockDevice::new(file, offset));
 
-    let mut fs = FATFileSystem::open(device);
+    let fs = FATFileSystem::open(device);
 
-    let mut cluster_buffer = vec![0u8; fs.cluster_bytes() as usize];
+    let mut read_buffer = vec![0u8; fs.required_read_buffer_size()];
 
-    for entry in fs.ls_root(cluster_buffer.as_mut_slice()) {
-        process_entry(&mut fs, 0, entry)
-    }
+    fs.walk_directory(read_buffer.as_mut_slice(), DirectorySelector::Root)
+        .enumerate_occupied_entries(|entry| {
+            process_entry(&fs, 0, entry);
+        });
 
     Ok(())
 }
 
-fn process_entry<'a>(fs: &mut FATFileSystem, level: usize, entry: DirectoryEntry<'a>) {
+fn process_entry<'a>(fs: &FATFileSystem, level: usize, entry: DirectoryEntry<'a>) {
     match entry {
         DirectoryEntry::LongFileName(entry) => {
             for _ in 0..level {
@@ -47,12 +47,16 @@ fn process_entry<'a>(fs: &mut FATFileSystem, level: usize, entry: DirectoryEntry
             if entry.is_directory() {
                 println!("Dir: {}", std::str::from_utf8(entry.name()).unwrap(),);
 
-                let mut dir_cluster = vec![0u8; fs.cluster_bytes() as usize];
-
                 if entry.name()[0] != b'.' {
-                    for child_entry in fs.ls(entry.first_cluster(), dir_cluster.as_mut_slice()) {
-                        process_entry(fs, level + 1, child_entry)
-                    }
+                    let mut read_buffer = vec![0u8; fs.required_read_buffer_size()];
+
+                    fs.walk_directory(
+                        read_buffer.as_mut_slice(),
+                        DirectorySelector::Normal(entry.first_cluster()),
+                    )
+                    .enumerate_occupied_entries(|child_entry| {
+                        process_entry(&fs, level + 1, child_entry);
+                    });
                 }
             } else {
                 println!(

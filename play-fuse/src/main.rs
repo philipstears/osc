@@ -4,7 +4,6 @@ use fuse::{
 };
 use libc::ENOENT;
 use play_fat::block_device::virt::*;
-use play_fat::fat::prim::*;
 use play_fat::fat::*;
 use std::collections::{btree_map, BTreeMap};
 use std::env;
@@ -32,7 +31,7 @@ impl FSImpl {
         let device = FileBlockDevice::new(image, offset);
         let fs = FATFileSystem::open(Box::new(device));
 
-        let buffer = vec![0u8; fs.cluster_bytes() as usize];
+        let buffer = vec![0u8; fs.required_read_buffer_size()];
         let nodes_by_cluster = BTreeMap::new();
 
         Self {
@@ -53,7 +52,7 @@ impl FSImpl {
             crtime: UNIX_EPOCH,
             kind: FileType::Directory,
             perm: 0o755,
-            nlink: 2,
+            nlink: 1,
             uid: req.uid(),
             gid: req.gid(),
             rdev: 0,
@@ -72,83 +71,98 @@ impl FSImpl {
     fn inode_to_cluster_index(inode: u64) -> u32 {
         (inode - 16) as u32
     }
+
+    fn get_directory_selector(&self, inode: u64) -> Option<DirectorySelector> {
+        if inode == FUSE_ROOT_ID {
+            Some(DirectorySelector::Root)
+        } else {
+            self.nodes_by_cluster
+                .get(&Self::inode_to_cluster_index(inode))
+                .map(|details| DirectorySelector::Normal(details.first_cluster))
+        }
+    }
 }
 
 impl Filesystem for FSImpl {
     fn lookup(&mut self, req: &Request, parent_inode: u64, name: &OsStr, reply: ReplyEntry) {
         println!("Looking up {:?} in {}", name, parent_inode);
 
-        let directory_entries = if parent_inode == FUSE_ROOT_ID {
-            self.fs.ls_root(self.buffer.as_mut_slice())
-        } else {
-            let parent_cluster = Self::inode_to_cluster_index(parent_inode);
+        let maybe_directory_selector = self.get_directory_selector(parent_inode);
 
-            if let Some(details) = self.nodes_by_cluster.get(&parent_cluster) {
-                assert!(parent_cluster == details.first_cluster);
-                self.fs
-                    .ls(details.first_cluster, self.buffer.as_mut_slice())
-            } else {
+        let mut directory_walker = match maybe_directory_selector {
+            Some(directory_selector) => self
+                .fs
+                .walk_directory(self.buffer.as_mut_slice(), directory_selector),
+            None => {
                 reply.error(ENOENT);
                 return;
             }
         };
 
-        for entry in directory_entries {
-            match entry {
-                DirectoryEntry::LongFileName(_entry) => {}
+        loop {
+            for entry in directory_walker.occupied_entries() {
+                match entry {
+                    DirectoryEntry::LongFileName(_entry) => {}
 
-                DirectoryEntry::Standard(entry) => {
-                    let entry_name = std::str::from_utf8(entry.name()).unwrap().trim();
+                    DirectoryEntry::Standard(entry) => {
+                        let entry_name = std::str::from_utf8(entry.name()).unwrap().trim();
 
-                    if name != entry_name {
-                        continue;
+                        if name != entry_name {
+                            continue;
+                        }
+
+                        let node_details = self
+                            .nodes_by_cluster
+                            .entry(entry.first_cluster())
+                            .or_insert_with(|| {
+                                let attr = FileAttr {
+                                    ino: Self::cluster_index_to_inode(entry.first_cluster()),
+                                    size: entry.size() as u64,
+                                    blocks: 0,
+                                    atime: UNIX_EPOCH,
+                                    mtime: UNIX_EPOCH,
+                                    ctime: UNIX_EPOCH,
+                                    crtime: UNIX_EPOCH,
+                                    kind: if entry.is_directory() {
+                                        FileType::Directory
+                                    } else {
+                                        FileType::RegularFile
+                                    },
+                                    perm: 0o755,
+                                    nlink: 1,
+                                    uid: req.uid(),
+                                    gid: req.gid(),
+                                    rdev: 0,
+                                    flags: 0,
+                                };
+
+                                let node_details = NodeDetails {
+                                    reference_count: 0,
+                                    attr,
+                                    first_cluster: entry.first_cluster(),
+                                };
+
+                                node_details
+                            });
+
+                        node_details.reference_count += 1;
+
+                        reply.entry(&TTL, &node_details.attr, 0);
+
+                        println!(
+                            "Found entry {:?} with inode {}",
+                            name, node_details.attr.ino
+                        );
+
+                        return;
                     }
-
-                    let node_details = self
-                        .nodes_by_cluster
-                        .entry(entry.first_cluster())
-                        .or_insert_with(|| {
-                            let attr = FileAttr {
-                                ino: Self::cluster_index_to_inode(entry.first_cluster()),
-                                size: entry.size() as u64,
-                                blocks: 0,
-                                atime: UNIX_EPOCH,
-                                mtime: UNIX_EPOCH,
-                                ctime: UNIX_EPOCH,
-                                crtime: UNIX_EPOCH,
-                                kind: if entry.is_directory() {
-                                    FileType::Directory
-                                } else {
-                                    FileType::RegularFile
-                                },
-                                perm: 0o755,
-                                nlink: 2,
-                                uid: req.uid(),
-                                gid: req.gid(),
-                                rdev: 0,
-                                flags: 0,
-                            };
-
-                            let node_details = NodeDetails {
-                                reference_count: 0,
-                                attr,
-                                first_cluster: entry.first_cluster(),
-                            };
-
-                            node_details
-                        });
-
-                    node_details.reference_count += 1;
-
-                    reply.entry(&TTL, &node_details.attr, 0);
-
-                    println!(
-                        "Found entry {:?} with inode {}",
-                        name, node_details.attr.ino
-                    );
-
-                    return;
                 }
+            }
+
+            if let Some(new_directory_walker) = directory_walker.next() {
+                directory_walker = new_directory_walker;
+            } else {
+                break;
             }
         }
 
@@ -242,22 +256,29 @@ impl Filesystem for FSImpl {
     ) {
         println!("Starting enumeration of {} with offset {}", ino, offset);
 
-        let directory_entries = if ino == FUSE_ROOT_ID {
-            self.fs.ls_root(self.buffer.as_mut_slice())
-        } else {
-            let index = Self::inode_to_cluster_index(ino);
+        let maybe_directory_selector = self.get_directory_selector(ino);
 
-            if let Some(details) = self.nodes_by_cluster.get(&index) {
-                self.fs
-                    .ls(details.first_cluster, self.buffer.as_mut_slice())
-            } else {
+        let directory_walker = match maybe_directory_selector {
+            Some(directory_selector) => self
+                .fs
+                .walk_directory(self.buffer.as_mut_slice(), directory_selector),
+            None => {
                 reply.error(ENOENT);
                 return;
             }
         };
 
         // TODO: what about "." and ".."
-        for (i, entry) in directory_entries.enumerate().skip(offset as usize) {
+        let mut next_index = 0;
+
+        directory_walker.enumerate_occupied_entries(|entry| {
+            let index = next_index;
+            next_index += 1;
+
+            if index < offset {
+                return;
+            }
+
             match entry {
                 DirectoryEntry::LongFileName(_entry) => {}
 
@@ -265,7 +286,7 @@ impl Filesystem for FSImpl {
                     let entry_name = std::str::from_utf8(entry.name()).unwrap().trim();
 
                     let inode = Self::cluster_index_to_inode(entry.first_cluster());
-                    let next_offset = i as i64 + 1;
+                    let next_offset = index as i64 + 1;
 
                     if entry.is_directory() {
                         println!(
@@ -279,7 +300,7 @@ impl Filesystem for FSImpl {
                     }
                 }
             }
-        }
+        });
 
         reply.ok();
     }
