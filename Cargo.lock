@@ -139,6 +139,13 @@ name = "osc-fat"
 version = "0.1.0"
 
 [[package]]
+name = "osc-fat-example"
+version = "0.1.0"
+dependencies = [
+ "osc-fat",
+]
+
+[[package]]
 name = "osc-fat-fuse"
 version = "0.1.0"
 dependencies = [
