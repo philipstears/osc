@@ -1,6 +1,6 @@
 [workspace]
 members = [
-  "play-fuse",
-  "play-fat",
+  "osc-fat-fuse",
+  "osc-fat",
 ]
 

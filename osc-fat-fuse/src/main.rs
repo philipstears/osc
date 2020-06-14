@@ -3,8 +3,8 @@ use fuse::{
     FUSE_ROOT_ID,
 };
 use libc::ENOENT;
-use play_fat::block_device::virt::*;
-use play_fat::fat::*;
+use osc_fat::block_device::virt::*;
+use osc_fat::fat::*;
 use std::collections::{btree_map, BTreeMap};
 use std::env;
 use std::ffi::OsStr;

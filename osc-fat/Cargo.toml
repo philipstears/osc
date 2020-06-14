@@ -1,5 +1,5 @@
 [package]
-name = "play-fat"
+name = "osc-fat"
 version = "0.1.0"
 authors = ["philipstears <philip@philipstears.com>"]
 edition = "2018"

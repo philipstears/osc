@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 
-use play_fat::block_device::virt::*;
-use play_fat::fat::*;
+use osc_fat::block_device::virt::*;
+use osc_fat::fat::*;
 use std::fs::File;
 use std::io::Result;
 

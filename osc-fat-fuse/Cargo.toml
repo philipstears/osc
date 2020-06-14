@@ -1,5 +1,5 @@
 [package]
-name = "play-fuse"
+name = "osc-fat-fuse"
 version = "0.1.0"
 authors = ["philipstears <philip@philipstears.com>"]
 edition = "2018"
@@ -16,5 +16,5 @@ slab = "0.4.2"
 git = "https://github.com/zargony/fuse-rs"
 branch = "master"
 
-[dependencies.play-fat]
-path = "../play-fat"
+[dependencies.osc-fat]
+path = "../osc-fat"
