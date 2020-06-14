@@ -1,13 +1,13 @@
 #![allow(dead_code)]
-use core::{cell::RefCell, convert::TryInto, ops::Range, slice};
+use core::{cell::RefCell, ops::Range, slice};
 use osc_block_storage::BlockDevice;
 use prim::*;
 use std::rc::Rc;
 
 mod math;
 pub mod prim;
-
-type ByteRange = Range<usize>;
+mod util;
+use util::*;
 
 pub struct DirectoryEntriesIterator<'a>(slice::ChunksExact<'a, u8>);
 
@@ -70,69 +70,51 @@ impl<'a> StandardDirectoryEntry<'a> {
     const RANGE_SIZE: ByteRange = 28..32;
 
     pub fn name(&self) -> &[u8] {
-        self.range(Self::RANGE_NAME)
+        self.0.range(Self::RANGE_NAME)
     }
 
     pub fn ext(&self) -> &[u8] {
-        self.range(Self::RANGE_EXT)
+        self.0.range(Self::RANGE_EXT)
     }
 
     pub fn size(&self) -> u32 {
-        self.u32(Self::RANGE_SIZE)
+        self.0.u32(Self::RANGE_SIZE)
     }
 
     pub fn is_read_only(&self) -> bool {
-        self.u8(Self::RANGE_ATTR) & 0x01 != 0
+        self.0.u8(Self::RANGE_ATTR) & 0x01 != 0
     }
 
     pub fn is_hidden(&self) -> bool {
-        self.u8(Self::RANGE_ATTR) & 0x02 != 0
+        self.0.u8(Self::RANGE_ATTR) & 0x02 != 0
     }
 
     pub fn is_system(&self) -> bool {
-        self.u8(Self::RANGE_ATTR) & 0x04 != 0
+        self.0.u8(Self::RANGE_ATTR) & 0x04 != 0
     }
 
     pub fn is_volume_id(&self) -> bool {
-        self.u8(Self::RANGE_ATTR) & 0x08 != 0
+        self.0.u8(Self::RANGE_ATTR) & 0x08 != 0
     }
 
     pub fn is_directory(&self) -> bool {
-        self.u8(Self::RANGE_ATTR) & 0x10 != 0
+        self.0.u8(Self::RANGE_ATTR) & 0x10 != 0
     }
 
     pub fn is_archive(&self) -> bool {
-        self.u8(Self::RANGE_ATTR) & 0x20 != 0
+        self.0.u8(Self::RANGE_ATTR) & 0x20 != 0
     }
 
     pub fn first_cluster_high(&self) -> u16 {
-        self.u16(Self::RANGE_FIRST_CLUSTER_HIGH)
+        self.0.u16(Self::RANGE_FIRST_CLUSTER_HIGH)
     }
 
     pub fn first_cluster_low(&self) -> u16 {
-        self.u16(Self::RANGE_FIRST_CLUSTER_LOW)
+        self.0.u16(Self::RANGE_FIRST_CLUSTER_LOW)
     }
 
     pub fn first_cluster(&self) -> u32 {
         ((self.first_cluster_high() as u32) << 16) | (self.first_cluster_low() as u32)
-    }
-
-    fn range(&self, range: ByteRange) -> &[u8] {
-        &self.0[range]
-    }
-
-    fn u8(&self, range: ByteRange) -> u8 {
-        self.0[range][0]
-    }
-
-    fn u16(&self, range: ByteRange) -> u16 {
-        let bytes = self.range(range);
-        u16::from_le_bytes(bytes.try_into().unwrap())
-    }
-
-    fn u32(&self, range: ByteRange) -> u32 {
-        let bytes = self.range(range);
-        u32::from_le_bytes(bytes.try_into().unwrap())
     }
 }
 
@@ -153,19 +135,15 @@ impl<'a> LongFileNameEntry<'a> {
     }
 
     fn portion1(&self) -> &[u8] {
-        self.range(Self::RANGE_PORTION1)
+        self.0.range(Self::RANGE_PORTION1)
     }
 
     fn portion2(&self) -> &[u8] {
-        self.range(Self::RANGE_PORTION2)
+        self.0.range(Self::RANGE_PORTION2)
     }
 
     fn portion3(&self) -> &[u8] {
-        self.range(Self::RANGE_PORTION3)
-    }
-
-    fn range(&self, range: ByteRange) -> &[u8] {
-        &self.0[range]
+        self.0.range(Self::RANGE_PORTION3)
     }
 }
 

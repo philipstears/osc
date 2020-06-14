@@ -1,4 +1,5 @@
 use crate::math::DivCeiling;
+use crate::util::*;
 use crate::*;
 
 pub const BIOS_PARAMETER_BLOCK_SIZE: usize = 512;
@@ -26,39 +27,39 @@ impl<'a> CommonBiosParameterBlock<'a> {
     const RANGE_TOTAL_SECTORS_32: ByteRange = 32..36;
 
     pub fn oem(&self) -> &[u8] {
-        self.range(Self::RANGE_OEM)
+        self.0.range(Self::RANGE_OEM)
     }
 
     pub fn bytes_per_sector(&self) -> u16 {
-        self.u16(Self::RANGE_BYTES_PER_SECTOR)
+        self.0.u16(Self::RANGE_BYTES_PER_SECTOR)
     }
 
     pub fn sectors_per_cluster(&self) -> u8 {
-        self.u8(Self::RANGE_SECTORS_PER_CLUSTER)
+        self.0.u8(Self::RANGE_SECTORS_PER_CLUSTER)
     }
 
     pub fn reserved_sector_count(&self) -> u16 {
-        self.u16(Self::RANGE_RESERVED_SECTOR_COUNT)
+        self.0.u16(Self::RANGE_RESERVED_SECTOR_COUNT)
     }
 
     pub fn fat_count(&self) -> u8 {
-        self.u8(Self::RANGE_NUM_FATS)
+        self.0.u8(Self::RANGE_NUM_FATS)
     }
 
     pub fn root_entry_count(&self) -> u16 {
-        self.u16(Self::RANGE_ROOT_ENTRY_COUNT)
+        self.0.u16(Self::RANGE_ROOT_ENTRY_COUNT)
     }
 
     pub fn sectors_per_fat_16(&self) -> u16 {
-        self.u16(Self::RANGE_SECTORS_PER_FAT_16)
+        self.0.u16(Self::RANGE_SECTORS_PER_FAT_16)
     }
 
     pub fn total_sectors_16(&self) -> u16 {
-        self.u16(Self::RANGE_TOTAL_SECTORS_16)
+        self.0.u16(Self::RANGE_TOTAL_SECTORS_16)
     }
 
     pub fn total_sectors_32(&self) -> u32 {
-        self.u32(Self::RANGE_TOTAL_SECTORS_32)
+        self.0.u32(Self::RANGE_TOTAL_SECTORS_32)
     }
 
     pub fn total_sectors(&self) -> u32 {
@@ -66,24 +67,6 @@ impl<'a> CommonBiosParameterBlock<'a> {
             0 => self.total_sectors_32(),
             n => n as u32,
         }
-    }
-
-    fn range(&self, range: ByteRange) -> &[u8] {
-        &self.0[range]
-    }
-
-    fn u8(&self, range: ByteRange) -> u8 {
-        self.0[range][0]
-    }
-
-    fn u16(&self, range: ByteRange) -> u16 {
-        let bytes = self.range(range);
-        u16::from_le_bytes(bytes.try_into().unwrap())
-    }
-
-    fn u32(&self, range: ByteRange) -> u32 {
-        let bytes = self.range(range);
-        u32::from_le_bytes(bytes.try_into().unwrap())
     }
 }
 
@@ -126,25 +109,11 @@ impl<'a> ExtendedFat32BiosParameterBlock<'a> {
     const RANGE_SIG_WORD: ByteRange = 510..512;
 
     pub fn sectors_per_fat_32(&self) -> u32 {
-        self.u32(Self::RANGE_SECTORS_PER_FAT_32)
+        self.0.u32(Self::RANGE_SECTORS_PER_FAT_32)
     }
 
     pub fn root_cluster(&self) -> u32 {
-        self.u32(Self::RANGE_ROOT_CLUSTER)
-    }
-
-    fn range(&self, range: ByteRange) -> &[u8] {
-        &self.0[range]
-    }
-
-    fn u16(&self, range: ByteRange) -> u16 {
-        let bytes = self.range(range);
-        u16::from_le_bytes(bytes.try_into().unwrap())
-    }
-
-    fn u32(&self, range: ByteRange) -> u32 {
-        let bytes = self.range(range);
-        u32::from_le_bytes(bytes.try_into().unwrap())
+        self.0.u32(Self::RANGE_ROOT_CLUSTER)
     }
 }
 
@@ -199,16 +168,7 @@ impl<'a> FileAllocationTable32<'a> {
         // Need to mask off the top 4 bits, according to the spec
         // only 28-bits are used, and the others must be ignored
         // on read, and left alone on write
-        (self.u32(start..end) & 0x0FFFFFFF).into()
-    }
-
-    fn range(&self, range: ByteRange) -> &[u8] {
-        &self.0[range]
-    }
-
-    fn u32(&self, range: ByteRange) -> u32 {
-        let bytes = self.range(range);
-        u32::from_le_bytes(bytes.try_into().unwrap())
+        (self.0.u32(start..end) & 0x0FFFFFFF).into()
     }
 }
 
