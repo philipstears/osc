@@ -1,8 +1,11 @@
+#![cfg_attr(not(feature = "std"), no_std)]
+
 pub trait BlockDevice {
     fn block_size(&self) -> u16;
     fn read_blocks(&mut self, start_block: u64, destination: &mut [u8]) -> u64;
 }
 
+#[cfg(feature = "std")]
 pub mod virt {
     use super::*;
     use std::{

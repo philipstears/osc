@@ -13,3 +13,4 @@ path = "../osc-fat"
 
 [dependencies.osc-block-storage]
 path = "../osc-block-storage"
+features = [ "std" ]
