@@ -1,6 +1,6 @@
 // TODO: use https://docs.rs/num-integer? it is probably slower though because
 // it is more general
-pub trait DivCeiling {
+pub(crate) trait DivCeiling {
     type Value;
 
     fn div_ceiling(self, divisor: Self::Value) -> Self::Value;
