@@ -27,22 +27,18 @@ fn main() -> Result<()> {
 fn process_entry<'a>(fs: &FATFileSystem, level: usize, entry: DirectoryEntry<'a>) {
     match entry {
         DirectoryEntry::LongFileName(entry) => {
-            for _ in 0..level {
-                print!("  ");
-            }
+            print!("{:>indent$}", "", indent = level * 2);
 
             println!(
                 "LFN: {:?}",
                 std::char::decode_utf16(entry.chars())
                     .filter_map(|ch| ch.ok())
-                    .collect::<String>()
+                    .collect::<String>(),
             );
         }
 
         DirectoryEntry::Standard(entry) => {
-            for _ in 0..level {
-                print!("  ");
-            }
+            print!("{:>indent$}", "", indent = level * 2);
 
             if entry.is_directory() {
                 println!("Dir: {}", std::str::from_utf8(entry.name()).unwrap(),);
