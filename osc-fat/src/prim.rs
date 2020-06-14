@@ -1,5 +1,5 @@
 use crate::math::DivCeiling;
-use crate::util::*;
+use crate::support::{ByteRange, DataStructure};
 use crate::*;
 
 pub const BIOS_PARAMETER_BLOCK_SIZE: usize = 512;

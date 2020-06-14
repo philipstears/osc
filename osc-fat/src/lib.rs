@@ -6,14 +6,10 @@ use std::rc::Rc;
 
 pub mod prim;
 
-mod cluster_walker;
 mod math;
-mod read_buffer;
-mod util;
+mod support;
 
-use cluster_walker::*;
-use read_buffer::*;
-use util::*;
+use support::*;
 
 pub struct DirectoryEntriesIterator<'a>(slice::ChunksExact<'a, u8>);
 

@@ -1,5 +1,5 @@
 use crate::prim::{FileAllocationTable32, FileAllocationTable32Result};
-use crate::read_buffer::*;
+use crate::support::ReadBuffer;
 use crate::FATGeometry;
 
 pub(crate) struct ClusterWalker<'a> {
