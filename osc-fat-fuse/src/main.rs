@@ -4,7 +4,7 @@ use fuse::{
 };
 use libc::ENOENT;
 use osc_block_storage::virt::*;
-use osc_fat::fat::*;
+use osc_fat::*;
 use std::collections::{btree_map, BTreeMap};
 use std::env;
 use std::ffi::OsStr;

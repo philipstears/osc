@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 
 use osc_block_storage::virt::*;
-use osc_fat::fat::*;
+use osc_fat::*;
 use std::fs::File;
 use std::io::Result;
 
