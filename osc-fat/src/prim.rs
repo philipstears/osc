@@ -6,6 +6,7 @@ pub const BIOS_PARAMETER_BLOCK_SIZE: usize = 512;
 
 pub struct CommonBiosParameterBlock<'a>(&'a [u8]);
 
+#[allow(dead_code)]
 impl<'a> CommonBiosParameterBlock<'a> {
     pub const SIZE: usize = 36;
 
@@ -76,9 +77,10 @@ impl<'a> From<&'a [u8]> for CommonBiosParameterBlock<'a> {
     }
 }
 
-pub struct ExtendedBiosParameterBlock;
+pub struct ExtendedBiosParameterBlock<'a>(&'a [u8]);
 
-impl ExtendedBiosParameterBlock {
+#[allow(dead_code)]
+impl<'a> ExtendedBiosParameterBlock<'a> {
     const RANGE_DRIVE_NUM: ByteRange = 36..37;
     const RANGE_RESV1: ByteRange = 37..38;
     const RANGE_BOOT_SIG: ByteRange = 38..39;
@@ -89,8 +91,15 @@ impl ExtendedBiosParameterBlock {
     const RANGE_SIG_WORD: ByteRange = 510..512;
 }
 
+impl<'a> From<&'a [u8]> for ExtendedBiosParameterBlock<'a> {
+    fn from(other: &'a [u8]) -> Self {
+        Self(other)
+    }
+}
+
 pub struct ExtendedFat32BiosParameterBlock<'a>(&'a [u8]);
 
+#[allow(dead_code)]
 impl<'a> ExtendedFat32BiosParameterBlock<'a> {
     const RANGE_SECTORS_PER_FAT_32: ByteRange = 36..40;
     const RANGE_EXT_FLAGS: ByteRange = 40..42;

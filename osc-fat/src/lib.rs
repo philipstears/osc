@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 use core::{cell::RefCell, slice};
 use osc_block_storage::BlockDevice;
 use prim::*;
@@ -56,6 +55,7 @@ impl<'a> From<&'a [u8]> for DirectoryEntry<'a> {
 
 pub struct StandardDirectoryEntry<'a>(&'a [u8]);
 
+#[allow(dead_code)]
 impl<'a> StandardDirectoryEntry<'a> {
     const RANGE_NAME: ByteRange = 0..8;
     const RANGE_EXT: ByteRange = 8..11;
@@ -122,6 +122,7 @@ impl<'a> StandardDirectoryEntry<'a> {
 
 pub struct LongFileNameEntry<'a>(&'a [u8]);
 
+#[allow(dead_code)]
 impl<'a> LongFileNameEntry<'a> {
     const RANGE_ORDER: ByteRange = 0..1;
     const RANGE_PORTION1: ByteRange = 1..11;
