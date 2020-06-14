@@ -1,6 +1,7 @@
+use alloc::boxed::Box;
+use alloc::rc::Rc;
 use core::{cell::RefCell, ops::Range};
 use osc_block_storage::BlockDevice;
-use std::rc::Rc;
 
 pub(crate) struct ReadBuffer<'a> {
     device: Rc<RefCell<Box<dyn BlockDevice>>>,

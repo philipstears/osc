@@ -1,7 +1,12 @@
+#![no_std]
+
+extern crate alloc;
+
+use alloc::boxed::Box;
+use alloc::rc::Rc;
 use core::{cell::RefCell, slice};
 use osc_block_storage::BlockDevice;
 use prim::*;
-use std::rc::Rc;
 
 pub mod prim;
 
@@ -330,8 +335,6 @@ pub struct FATFileSystem {
 
 impl FATFileSystem {
     pub fn open(mut device: Box<dyn BlockDevice>) -> Self {
-        use std::str;
-
         // Read the BPB
         let mut read_buffer = [0u8; 512];
         device.read_blocks(0, &mut read_buffer);
@@ -373,12 +376,6 @@ impl FATFileSystem {
                 ExtendedFat32BiosParameterBlock::from(read_buffer_slice).root_cluster()
             }
         };
-
-        println!(
-            "Variant: {:?}, OEM: {}",
-            variant,
-            str::from_utf8(bpb.oem()).unwrap()
-        );
 
         let geo = FATGeometry {
             cluster_size_sectors: sectors_per_cluster,
