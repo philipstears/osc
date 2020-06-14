@@ -1,5 +1,6 @@
 [workspace]
 members = [
+  "osc-block-storage",
   "osc-fat-example",
   "osc-fat-fuse",
   "osc-fat",

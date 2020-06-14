@@ -135,13 +135,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "osc-block-storage"
+version = "0.1.0"
+
+[[package]]
 name = "osc-fat"
 version = "0.1.0"
+dependencies = [
+ "osc-block-storage",
+]
 
 [[package]]
 name = "osc-fat-example"
 version = "0.1.0"
 dependencies = [
+ "osc-block-storage",
  "osc-fat",
 ]
 
@@ -153,6 +161,7 @@ dependencies = [
  "fuse",
  "libc",
  "nix",
+ "osc-block-storage",
  "osc-fat",
  "slab",
 ]

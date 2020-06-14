@@ -10,3 +10,6 @@ edition = "2018"
 
 [dependencies.osc-fat]
 path = "../osc-fat"
+
+[dependencies.osc-block-storage]
+path = "../osc-block-storage"
