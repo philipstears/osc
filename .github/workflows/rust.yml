@@ -16,6 +16,8 @@ jobs:
 
     steps:
     - uses: actions/checkout@v2
+    - name: Install Prerequisites
+      run: sudo apt-get install fuse
     - name: Build
       run: cargo build --verbose
     - name: Run tests
